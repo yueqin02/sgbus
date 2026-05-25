@@ -35,7 +35,7 @@ export default function Home() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-1">
-        <h1 className="text-3xl font-bold tracking-tight text-emerald-300">
+        <h1 className="title-neon text-3xl font-bold tracking-tight">
           Where to?
         </h1>
         <p className="text-sm text-zinc-400">
