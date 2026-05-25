@@ -43,7 +43,7 @@ export function Countdown({ iso, className }: Props) {
           : "text-emerald-200";
 
   return (
-    <span className={cn("tabular-nums font-mono text-2xl font-semibold tracking-tight", toneClass, className)}>
+    <span className={cn("tabular-nums font-mono text-2xl font-semibold tracking-tight whitespace-nowrap", toneClass, className)}>
       {label}
     </span>
   );

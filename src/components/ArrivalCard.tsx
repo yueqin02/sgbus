@@ -47,13 +47,13 @@ export function ArrivalCard({ service }: { service: ArrivingService }) {
             </div>
           </div>
         </div>
-        <div className="flex flex-col items-end">
+        <div className="flex shrink-0 flex-col items-end">
           {next ? (
             <Countdown iso={next.estimatedArrival} />
           ) : (
             <span className="text-2xl font-semibold text-zinc-700">—</span>
           )}
-          <span className={cn("mt-1 text-[10px] uppercase tracking-wider", load.color)}>
+          <span className={cn("mt-1 text-[10px] uppercase tracking-wider whitespace-nowrap", load.color)}>
             {load.label}
           </span>
         </div>

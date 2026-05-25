@@ -46,7 +46,7 @@ export default async function StopPage({
             <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
               Bus stop
             </p>
-            <p className="mt-1 font-mono text-2xl text-zinc-100">{code}</p>
+            <p className="mt-1 font-mono text-2xl text-emerald-300">{code}</p>
             <p className="mt-1 truncate text-sm text-zinc-400">{stopName}</p>
           </div>
           <StarButton code={code} />

@@ -36,7 +36,7 @@ export default function FavoritesPage() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-3xl font-bold text-zinc-50">Saved stops</h1>
+        <h1 className="text-3xl font-bold tracking-tight text-emerald-300">Saved stops</h1>
         <p className="text-zinc-400">
           Live arrivals at every stop you’ve starred.
         </p>

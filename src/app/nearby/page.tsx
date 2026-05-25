@@ -87,7 +87,7 @@ export default function NearbyPage() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-3xl font-bold text-zinc-50">Nearby stops</h1>
+        <h1 className="text-3xl font-bold tracking-tight text-emerald-300">Nearby stops</h1>
         <p className="text-zinc-400">
           Closest bus stops to your current location.
         </p>

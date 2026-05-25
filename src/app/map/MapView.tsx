@@ -249,13 +249,13 @@ export function MapView() {
           offset={12}
           closeOnClick={false}
           closeButton
-          maxWidth="320px"
+          maxWidth="360px"
           onClose={() => {
             setSelected(null);
             setArrivals(null);
           }}
         >
-          <div className="w-[280px] max-w-[80vw] rounded-xl bg-zinc-950 p-3 text-zinc-100">
+          <div className="w-[340px] max-w-[88vw] rounded-xl bg-zinc-950 p-3 text-zinc-100">
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
                 <p className="truncate text-sm font-semibold">{selected.name}</p>

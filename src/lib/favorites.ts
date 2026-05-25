@@ -6,49 +6,62 @@ const KEY = "sgbus.favorites.v1";
 
 type FavoritesMap = Record<string, { addedAt: number }>;
 
-function read(): FavoritesMap {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(KEY);
-    if (!raw) return {};
-    return JSON.parse(raw) as FavoritesMap;
-  } catch {
-    return {};
+const EMPTY: FavoritesMap = Object.freeze({}) as FavoritesMap;
+
+// Cache so getSnapshot returns a stable reference until storage actually changes.
+let cachedRaw: string | null | undefined = undefined;
+let cachedMap: FavoritesMap = EMPTY;
+
+function readFresh(): FavoritesMap {
+  if (typeof window === "undefined") return EMPTY;
+  const raw = window.localStorage.getItem(KEY);
+  if (raw === cachedRaw) return cachedMap;
+  cachedRaw = raw;
+  if (!raw) {
+    cachedMap = EMPTY;
+    return cachedMap;
   }
+  try {
+    cachedMap = JSON.parse(raw) as FavoritesMap;
+  } catch {
+    cachedMap = EMPTY;
+  }
+  return cachedMap;
 }
 
 function write(map: FavoritesMap) {
   window.localStorage.setItem(KEY, JSON.stringify(map));
+  // Invalidate cache so next snapshot re-reads
+  cachedRaw = undefined;
   window.dispatchEvent(new Event("sgbus:favorites"));
 }
 
-const subscribers = new Set<() => void>();
-
 function subscribe(cb: () => void) {
-  const handler = () => cb();
+  const handler = () => {
+    cachedRaw = undefined; // cross-tab or in-tab change → next snapshot re-reads
+    cb();
+  };
   window.addEventListener("storage", handler);
   window.addEventListener("sgbus:favorites", handler);
-  subscribers.add(cb);
   return () => {
     window.removeEventListener("storage", handler);
     window.removeEventListener("sgbus:favorites", handler);
-    subscribers.delete(cb);
   };
 }
 
 function snapshot(): FavoritesMap {
-  return read();
+  return readFresh();
 }
 
 function serverSnapshot(): FavoritesMap {
-  return {};
+  return EMPTY;
 }
 
 export function useFavorites() {
   const map = useSyncExternalStore(subscribe, snapshot, serverSnapshot);
 
   const toggle = useCallback((code: string) => {
-    const current = read();
+    const current: FavoritesMap = { ...readFresh() };
     if (current[code]) {
       delete current[code];
     } else {
