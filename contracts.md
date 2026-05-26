@@ -62,6 +62,7 @@ src/
       vision/route.ts             # PR 0 skeleton, PR 4 + 5 wire OCR
     favorites/                    # existing
     map/                          # existing — PR 1 extends MapView
+    migrate-local/                # PR 0 — host the <Migrate /> client component
     nearby/                       # existing
     plan/                         # PR 2
     scan/                         # PR 4 + 5

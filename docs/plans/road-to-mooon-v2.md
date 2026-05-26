@@ -121,8 +121,9 @@ PR 5 cannot start until PR 2 merges ("Plan a trip here" cross-link goes into `/p
 **Modifies:** `src/app/plan/PlanForm.tsx` (mounts `VoiceMic` inside destination input).
 
 ### PR 4 — Stop OCR
-**Creates:** `src/lib/openai-vision.ts`, `src/lib/image-prep.ts`, `src/app/scan/page.tsx`, `src/app/scan/StopScanner.tsx`, `src/app/api/scan/route.ts`.
+**Creates:** `src/lib/openai-vision.ts`, `src/lib/image-prep.ts`, `src/app/scan/page.tsx`, `src/app/scan/StopScanner.tsx`.
 **Modifies:** `src/app/page.tsx` (adds the `+` scan button), `src/app/api/vision/route.ts` (adds `kind: 'stop'` handling).
+**Note:** there is no `/api/scan` route — all OCR goes through `/api/vision`.
 
 ### PR 5 — Building OCR
 **Creates:** `src/app/scan/BuildingScanner.tsx`, `src/app/scan/results/page.tsx`.
@@ -218,19 +219,23 @@ All migrations are **additive only**. Renaming or dropping requires explicit use
 - `GET /api/arrivals/[code]` → `ArrivalsResponse`
 
 ### PR 0
-- `POST /api/auth/callback` — Supabase OAuth callback (Google)
-- `POST /api/vision` — **rate-limit only in PR 0**. Returns 501 "not implemented" for any `kind` until PR 4 wires it up. Rate-limit returns 429 with `Retry-After` set to seconds until the next hour bucket.
+- `POST /api/auth/callback` — Supabase OAuth callback (Google) → 302 redirect to `?next=` or `/`
+- `POST /api/device/bootstrap` — body `{ device_id: uuid }` → `{ ok: true }`. Side effect: inserts the `devices` row and sets cookie `rtm.device.id`. Only route that trusts a body-supplied device_id (this is how the cookie gets established in the first place).
+- `POST /api/migrate` — body `{ device_id: uuid, favorites: string[], recents: string[] }` → `{ ok: true }`. Bulk-imports a device's localStorage payload exactly once. Idempotent via the `favorites` PK + a client-side `rtm.migrate.v1.done` flag.
+- `GET  /api/favorites` → `{ codes: string[] }` (this device's favorited stop codes)
+- `POST /api/favorites` — body `{ stop_code: string, op: "add" | "remove" }` → `{ ok: true }`
+- `POST /api/vision` — **rate-limit only in PR 0**. Returns 501 "not implemented" for any `kind` until PR 4 wires it up. **Increment is success-only** (see Task 0.11): the route calls `checkVisionAllowed(deviceId)` first; if not allowed, returns 429 with `Retry-After`; otherwise returns 501 *without* recording the call. PR 4 will add `recordVisionUse(deviceId)` only after a successful OpenAI response.
 
 ### PR 2
-- `POST /api/route` — body `{ from: {lat,lng,label?} | string, to: {lat,lng,label?} | string }` → `{ itineraries: Itinerary[] }` (top 3, by total time)
+- `POST /api/route` — body `{ from: GeoPoint | string, to: GeoPoint | string }` → `{ from: GeoPoint, to: GeoPoint, itineraries: Itinerary[] }` (top 3, by total time)
 - `GET  /api/search?q=...` — OneMap address search → `{ results: { name, lat, lng }[] }` (top 5)
 - `GET  /api/journeys` — returns this device's last 10 `recent_journeys`
-- `POST /api/journeys` — body `{ name?: string, from: ..., to: ..., preview: ... }` → 201 + row
+- `POST /api/journeys` — body `{ name?: string, from: GeoPoint, to: GeoPoint, preview: Itinerary }` → `{ id }`
 
 ### PR 4 / PR 5
-- `POST /api/vision` — body `{ kind: "stop" | "building", image_b64: string }` → for `stop`: `{ stop_code: string | null, confidence: number }`; for `building`: `{ name: string | null, confidence: number }`. Body ≤ 4 MB (Vercel hard cap; preprocessing must keep payload well under this).
+- `POST /api/vision` — body `{ kind: "stop" | "building", image_b64: string }` → for `stop`: `{ stop_code: string | null, confidence: number }`; for `building`: `{ name: string | null, confidence: number, results: { name, lat, lng }[] }`. Body ≤ 4 MB (Vercel hard cap; preprocessing must keep payload well under this).
 
-`Itinerary` shape pinned in `src/lib/types.ts` (defined in PR 2 Task 2.4).
+`Itinerary`, `ItineraryLeg`, `LegMode`, and `GeoPoint` shapes pinned in `src/lib/types.ts` (defined in PR 2 Task 2.1).
 
 ---
 
@@ -617,6 +622,8 @@ git commit -m "feat(favorites): DB-backed favorites via /api/favorites"
 
 **Files created:** `src/lib/rate-limit.ts`, `src/app/api/vision/route.ts`
 
+**Design note:** the rate-limit helper is split into a **read-only check** and a **success-only write**. The route handler calls `checkVisionAllowed()` first; if not allowed, it returns 429 and never records the attempt. Only after the OCR call succeeds (PR 4/5) does the handler call `recordVisionUse()`. This way OpenAI outages and bad-input rejections don't consume the user's hourly budget.
+
 - [ ] **Step 1:** Create `src/lib/rate-limit.ts`:
 ```ts
 import "server-only";
@@ -642,24 +649,35 @@ function secondsUntilNextHour(): number {
   return Math.max(1, Math.ceil((next - now) / 1000));
 }
 
-export async function checkAndIncrementVision(deviceId: string): Promise<RateLimitResult> {
+/** Read-only: does this device have budget left this hour? Never writes. */
+export async function checkVisionAllowed(deviceId: string): Promise<RateLimitResult> {
   const bucket = currentHourBucket();
-
-  // Atomic upsert + increment.
   const rows = await db
+    .select({ count: deviceVisionUsage.count })
+    .from(deviceVisionUsage)
+    .where(
+      and(
+        eq(deviceVisionUsage.deviceId, deviceId),
+        eq(deviceVisionUsage.hourBucket, bucket),
+      ),
+    );
+  const count = rows[0]?.count ?? 0;
+  if (count >= VISION_HOURLY_LIMIT) {
+    return { ok: false, retryAfterSeconds: secondsUntilNextHour() };
+  }
+  return { ok: true, remaining: VISION_HOURLY_LIMIT - count };
+}
+
+/** Success-only: atomically increment after a successful vision call. */
+export async function recordVisionUse(deviceId: string): Promise<void> {
+  const bucket = currentHourBucket();
+  await db
     .insert(deviceVisionUsage)
     .values({ deviceId, hourBucket: bucket, count: 1 })
     .onConflictDoUpdate({
       target: [deviceVisionUsage.deviceId, deviceVisionUsage.hourBucket],
       set: { count: sql`${deviceVisionUsage.count} + 1` },
-    })
-    .returning({ count: deviceVisionUsage.count });
-
-  const count = rows[0]?.count ?? 1;
-  if (count > VISION_HOURLY_LIMIT) {
-    return { ok: false, retryAfterSeconds: secondsUntilNextHour() };
-  }
-  return { ok: true, remaining: VISION_HOURLY_LIMIT - count };
+    });
 }
 ```
 
@@ -668,7 +686,7 @@ export async function checkAndIncrementVision(deviceId: string): Promise<RateLim
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { readDeviceIdCookie } from "@/lib/device-server";
-import { checkAndIncrementVision } from "@/lib/rate-limit";
+import { checkVisionAllowed } from "@/lib/rate-limit";
 
 const Body = z.object({
   kind: z.enum(["stop", "building"]),
@@ -686,15 +704,18 @@ export async function POST(req: Request) {
   const parsed = Body.safeParse(json);
   if (!parsed.success) return NextResponse.json({ error: "bad body" }, { status: 400 });
 
-  const rl = await checkAndIncrementVision(deviceId);
+  const rl = await checkVisionAllowed(deviceId);
   if (!rl.ok) {
+    // The JSON body uses snake_case; the type field is retryAfterSeconds (camelCase) internally.
     return NextResponse.json(
       { error: "rate_limited", retry_after_seconds: rl.retryAfterSeconds },
       { status: 429, headers: { "Retry-After": String(rl.retryAfterSeconds) } },
     );
   }
 
-  // PR 4/5 will implement the OCR branches.
+  // PR 4/5 will implement the OCR branches. They MUST call recordVisionUse(deviceId)
+  // only after a successful OpenAI response — never on rate-limit, validation error,
+  // or upstream failure. See contracts.md §8.
   return NextResponse.json({ error: "not_implemented_yet" }, { status: 501 });
 }
 ```
@@ -702,7 +723,7 @@ export async function POST(req: Request) {
 - [ ] **Step 3:** Commit
 ```bash
 git add src/lib/rate-limit.ts src/app/api/vision/
-git commit -m "feat(vision): rate-limit middleware + /api/vision skeleton"
+git commit -m "feat(vision): rate-limit (check + record split) + /api/vision skeleton"
 ```
 
 ### Task 0.12: Rebrand pass
@@ -783,7 +804,7 @@ All clean.
   - DevTools → Application → IndexedDB / LocalStorage shows `rtm.device.id` UUID
   - Network tab shows `POST /api/device/bootstrap` 200 OK on first load
   - Existing localStorage favorites (if any) appear in Supabase `favorites` table
-  - Test `POST /api/vision` from DevTools with `{kind:"stop", image_b64:"x".repeat(200)}` → 501. Spam it 51 times → 429 with `Retry-After` header.
+  - Test `POST /api/vision` from DevTools with `{kind:"stop", image_b64:"x".repeat(200)}` → 501. Spamming it does **not** rate-limit in PR 0 — the route is success-only and PR 0 has no successes. To verify the rate-limit gate fires, manually seed `device_vision_usage` with `count = 50` for the current device + hour bucket in the Supabase SQL editor, then send the request again → 429 with `Retry-After` header. Delete the seed row when done.
 
 - [ ] **Step 3:** Run the auto-mode verification gate:
   - **superpowers:code-reviewer** — diff vs this plan and the project conventions
@@ -1012,13 +1033,14 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { routePT, searchAddress } from "@/lib/onemap";
 
-const Point = z.union([
+// Matches the GeoPoint exported from src/lib/types.ts (PR 2 Task 2.1).
+const GeoPointZ = z.union([
   z.object({ lat: z.number(), lng: z.number(), label: z.string().optional() }),
   z.string().min(2),
 ]);
-const Body = z.object({ from: Point, to: Point });
+const Body = z.object({ from: GeoPointZ, to: GeoPointZ });
 
-async function resolve(p: z.infer<typeof Point>) {
+async function resolve(p: z.infer<typeof GeoPointZ>) {
   if (typeof p === "string") {
     const hits = await searchAddress(p);
     if (!hits.length) throw new Error(`no match for "${p}"`);
